@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Mutex } from '../lib/Mutex';
 import { Log, Slot } from '../types/booking';
 
@@ -7,13 +7,17 @@ const userMutex = new Mutex();
 const slotMutex = new Map<number, Mutex>();
 
 export const useBookingSystem = () => {
-  // Database State (Simulated)
-  const [userCredit, setUserCredit] = useState(1000);
-  const [slots, setSlots] = useState<Slot[]>([
+  // Database State (Simulated with Ref to bypass closure staleness)
+  const dbUserCredit = useRef(1000);
+  const dbSlots = useRef<Slot[]>([
     { id: 1, time: '10:00 - 11:00', price: 500, status: 'available' },
     { id: 2, time: '13:00 - 14:00', price: 500, status: 'available' },
     { id: 3, time: '15:00 - 16:00', price: 500, status: 'available' },
   ]);
+
+  // UI State (Sync with DB)
+  const [userCredit, setUserCredit] = useState(dbUserCredit.current);
+  const [slots, setSlots] = useState<Slot[]>(dbSlots.current);
 
   // UI State
   const [logs, setLogs] = useState<Log[]>([]);
@@ -43,8 +47,13 @@ export const useBookingSystem = () => {
   const clearLogs = () => setLogs([]);
 
   const resetSystem = () => {
-    setUserCredit(1000);
-    setSlots(prev => prev.map(s => ({ ...s, status: 'available', bookedBy: undefined })));
+    // Reset DB
+    dbUserCredit.current = 1000;
+    dbSlots.current = dbSlots.current.map(s => ({ ...s, status: 'available', bookedBy: undefined }));
+
+    // Sync UI
+    setUserCredit(dbUserCredit.current);
+    setSlots([...dbSlots.current]);
     setLogs([]);
     setIsProcessing(false);
   };
@@ -76,7 +85,10 @@ export const useBookingSystem = () => {
       // STEP 2: CHECK (Availability & Balance)
       addLog(txId, 'CHECK', `👀 ตรวจสอบสถานะล่าสุด...`);
 
-      const currentSlot = slots.find(s => s.id === slotId);
+      // Read from DB (Ref) to get latest state
+      const currentSlots = dbSlots.current;
+      const currentCredit = dbUserCredit.current;
+      const currentSlot = currentSlots.find(s => s.id === slotId);
 
       // Validation 1: Slot Availability
       if (!currentSlot || currentSlot.status !== 'available') {
@@ -84,8 +96,8 @@ export const useBookingSystem = () => {
       }
 
       // Validation 2: Balance Check
-      if (userCredit < currentSlot.price) {
-        throw new Error(`❌ เครดิตไม่พอ (ต้องการ ${currentSlot.price}, มี ${userCredit})`);
+      if (currentCredit < currentSlot.price) {
+        throw new Error(`❌ เครดิตไม่พอ (ต้องการ ${currentSlot.price}, มี ${currentCredit})`);
       }
 
       addLog(txId, 'CHECK', `✅ ผ่านการตรวจสอบ (Slot ว่าง, เงินพอ)`);
@@ -93,9 +105,13 @@ export const useBookingSystem = () => {
       // STEP 3: EXECUTE (Deduct & Reserve)
       addLog(txId, 'EXECUTE', `💸 กำลังตัดเครดิต ${currentSlot.price} และเปลี่ยนสถานะ...`);
 
-      // Update State
-      setUserCredit(prev => prev - currentSlot.price);
-      setSlots(prev => prev.map(s => s.id === slotId ? { ...s, status: 'booked', bookedBy: 'User (You)' } : s));
+      // Update DB (Ref)
+      dbUserCredit.current = currentCredit - currentSlot.price;
+      dbSlots.current = currentSlots.map(s => s.id === slotId ? { ...s, status: 'booked', bookedBy: 'User (You)' } : s);
+
+      // Sync UI
+      setUserCredit(dbUserCredit.current);
+      setSlots([...dbSlots.current]);
 
       // STEP 4: COMMIT
       addLog(txId, 'COMMIT', `💾 COMMIT COMPLETED: จองสำเร็จ!`);
